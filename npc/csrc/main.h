@@ -6,6 +6,11 @@
 #include "verilated.h"
 #include <stdio.h>
 #include "verilated_vcd_c.h"
+#include <nvboard.h>
+
+
+//#define TRACE_ON
+#define MAX_TIME 1000
 
 extern Vtop* dut;
 extern VerilatedVcdC* tfp;
