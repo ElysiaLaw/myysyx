@@ -5,6 +5,8 @@
 
 void single_cycle();
 void reset(int n);
+void single_posedge();
+void single_negedge();
 
 
 #endif
