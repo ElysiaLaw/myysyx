@@ -25,7 +25,10 @@ $(info mynxdc = $(MY_NXDC))
 #以下为中间参数编译
 
 INCFLAGS = $(addprefix -I,$(NVBOARD_HOME)/usr/include)
-CXXFLAGS += $(INCFLAGS) -DTOP_NAME="\"V$(MY_TOP)\""
+CXXFLAGS += $(INCFLAGS) -std=c++17 \
+	-DTOP_NAME="\"V$(MY_TOP)\"" \
+	-DTOP_CLASS=V$(MY_TOP) \
+	-DSTIM_TOP_NAME=$(MY_TOP)
 
 
 $(info MY_SRC_V = $(MY_SRC_V))
@@ -40,7 +43,7 @@ build: $(MY_SRC_V) $(MY_SRC_CPP) $(NVBOARD_ARCHIVE) $(MY_NXDC) \
 	$(call git_commit, "build RTL") # DO NOT REMOVE THIS LINE!!!
 	@mkdir -p $(MY_OBJ_DIR)
 	@rm -rf $(MY_OBJ_DIR)
-	verilator --cc --exe --build -j 0 --trace \
+	verilator --cc --exe --build -j 0 --trace --vpi --public-flat-rw \
 		--top-module $(MY_TOP) \
 		--Mdir $(MY_OBJ_DIR) \
 		$(MY_SRC_V) $(MY_SRC_CPP) $(NVBOARD_ARCHIVE) \

@@ -12,4 +12,8 @@ namespace myclock_time
 	void half_single_negedge();
 }
 
+void trace_init();
+void trace_step();
+void hide_rootio_from_wave();
+
 #endif
