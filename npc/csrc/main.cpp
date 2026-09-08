@@ -32,7 +32,7 @@ int main(int arg,char* argc[])
 #endif
 	{
 		nvboard_update();
-		single_cycle();
+		myclock_time::single_cycle();
 	}
 
 	nvboard_quit();

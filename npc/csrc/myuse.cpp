@@ -1,29 +1,33 @@
 #include "myuse.h"
-
-void single_cycle()
+namespace myclock_time
 {
-	single_posedge();
-	single_negedge();
+	void single_cycle()
+	{
+		myclock_time::half_single_posedge();
+		myclock_time::half_single_negedge();
+	}
+
+
+	void half_single_posedge()
+	{
+		dut -> clk = 1;
+		dut -> eval();
+	#ifdef TRACE_ON
+		tfp->dump(main_time ++);
+	#endif
+	}
+	
+	void half_single_negedge()
+	{
+		dut -> clk = 0;
+		dut -> eval();
+	#ifdef TRACE_ON
+		tfp->dump(main_time ++);
+	#endif
+	}
+
 }
 
-
-void single_posedge()
-{
-	dut -> clk = 1;
-	dut -> eval();
-#ifdef TRACE_ON
-	tfp->dump(main_time ++);
-#endif
-}
-
-void single_negedge()
-{
-	dut -> clk = 0;
-	dut -> eval();
-#ifdef TRACE_ON
-	tfp->dump(main_time ++);
-#endif
-}
 
 void reset(int n)
 {

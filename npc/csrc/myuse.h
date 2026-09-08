@@ -3,10 +3,13 @@
 
 #include "main.h"
 
-void single_cycle();
-void reset(int n);
-void single_posedge();
-void single_negedge();
 
+void reset(int n);
+namespace myclock_time
+{
+	void single_cycle();
+	void half_single_posedge();
+	void half_single_negedge();
+}
 
 #endif
