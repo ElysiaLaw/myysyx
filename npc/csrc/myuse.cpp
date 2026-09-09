@@ -33,7 +33,7 @@ namespace
 
 void trace_init()
 {
-#ifdef TRACE_ON
+#if TRACE_ON
 	init_check_trace.value = 0;
 	tfp->spTrace()->addInitCb(
 		init_check_init_callback,
@@ -50,7 +50,7 @@ void trace_init()
 
 void trace_step()
 {
-#ifdef TRACE_ON
+#if TRACE_ON
 	init_check_trace.value = init_check ? 1 : 0;
 	tfp->dump(main_time++);
 #endif

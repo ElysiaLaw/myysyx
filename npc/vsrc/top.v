@@ -1,16 +1,16 @@
 module top(
 	input clk,
 	input rst,
-	input a,
-	input b,
-	output c);
+	input c,
+	input d,
+	output e);
 
 	reg creg;
 
 	always @(*)begin
-		creg = a & b;
+		creg = c & d;
 	end
 
-	assign c =creg;
+	assign e =creg;
 
 endmodule

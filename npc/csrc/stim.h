@@ -10,14 +10,19 @@
 #include <sstream>
 #include <string>
 #include <vector>
-
 #include <vpi_user.h>
+
+#ifndef STIM_REPORT_PASS
+#define STIM_REPORT_PASS 0
+#endif
+
+#ifndef STIM_HASH_COMMENT
+#define STIM_HASH_COMMENT 1
+#endif
 
 #define STIM_V_PATH "vsrc"
 #define STIM_FILE_PATH "constr/top.stim"
 #define STIM_REPORT_PATH "stim.txt"
-#define STIM_REPORT_PASS 1
-#define STIM_HASH_COMMENT 1
 
 #ifndef STIM_TOP_NAME
 #error "STIM_TOP_NAME must be supplied by Makefile"

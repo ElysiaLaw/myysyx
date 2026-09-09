@@ -1,3 +1,16 @@
+#以下为可配置变量
+
+#配置是否启用脚本输入以及wave仿真
+TRACE_ON ?= 1
+
+#配置最大仿真时间（仅在TRACE_ON启用时生效）
+MAX_TIME ?= 2000
+
+
+
+
+
+
 #以下为根命名
 
 MY_BASE_DIR = .
@@ -14,6 +27,8 @@ $(info mybuilddir = $(MY_BUILD_DIR))
 MY_SRC_CPP = $(wildcard $(MY_BASE_DIR)/csrc/*.cpp)
 MY_SRC_V = $(wildcard $(MY_BASE_DIR)/vsrc/*.v)
 
+
+
 #以下为nvboard构建变量
 
 MY_NVBIND = $(MY_BUILD_DIR)/auto_bind.cpp
@@ -28,18 +43,19 @@ INCFLAGS = $(addprefix -I,$(NVBOARD_HOME)/usr/include)
 CXXFLAGS += $(INCFLAGS) -std=c++17 \
 	-DTOP_NAME="\"V$(MY_TOP)\"" \
 	-DTOP_CLASS=V$(MY_TOP) \
-	-DSTIM_TOP_NAME=$(MY_TOP)
+	-DSTIM_TOP_NAME=$(MY_TOP) \
+	-DMAX_TIME=$(MAX_TIME) \
+	-DTRACE_ON=$(TRACE_ON)
 
 
 $(info MY_SRC_V = $(MY_SRC_V))
 #$(info MY_SRC_CPP = $(MY_SRC_CPP))  #检测测试，
 
-.PHONY: build sim all run clear
+.PHONY: build sim all run clear self_test
 
 all: sim
 
-build: $(MY_SRC_V) $(MY_SRC_CPP) $(NVBOARD_ARCHIVE) $(MY_NXDC) \
-	$(MY_NVBIND)
+build: $(MY_SRC_V) $(MY_SRC_CPP) $(NVBOARD_ARCHIVE) $(MY_NXDC) $(MY_NVBIND)
 	$(call git_commit, "build RTL") # DO NOT REMOVE THIS LINE!!!
 	@mkdir -p $(MY_OBJ_DIR)
 	@rm -rf $(MY_OBJ_DIR)
@@ -63,6 +79,12 @@ run:
 
 clear:
 	@rm -rf $(MY_BUILD_DIR)
+
+self_test:
+	@rm -f ./wave.vcd
+	@rm -f ./stim.txt
+	@make sim TRACE_ON=1
+	@make sim TRACE_ON=0
 
 
 include ../Makefile

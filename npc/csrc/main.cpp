@@ -11,7 +11,7 @@ int main(int argc, char* argv[])
     // 使用空实例名，让 Verilator VPI 将顶层端口暴露为 TOP.<port>。
     dut = new TOP_CLASS("");
 
-#ifdef TRACE_ON
+#if TRACE_ON
     Verilated::traceEverOn(true);
     tfp = new VerilatedVcdC;
     dut->trace(tfp, 99);
@@ -19,14 +19,14 @@ int main(int argc, char* argv[])
     tfp->open("wave.vcd");
 #endif
 
-#if defined(TRACE_ON) && MAIN_HAS_STIM
+#if TRACE_ON && MAIN_HAS_STIM
     stim::Program program;
     std::vector<stim::Error> errors;
 
     if (!stim::load_program(program, errors))
     {
         stim::print_errors(errors);
-#ifdef TRACE_ON
+#if TRACE_ON
         tfp->close();
         delete tfp;
         tfp = NULL;
@@ -37,7 +37,7 @@ int main(int argc, char* argv[])
     }
 #endif
 
-#ifndef TRACE_ON
+#if !TRACE_ON
     nvboard_bind_all_pins(dut);
     nvboard_init();
 #endif
@@ -45,7 +45,7 @@ int main(int argc, char* argv[])
     dut->clk = 0;
     reset(20);
 
-#if defined(TRACE_ON) && MAIN_HAS_STIM
+#if TRACE_ON && MAIN_HAS_STIM
     if (!stim::init_runtime(errors))
     {
         stim::print_errors(errors);
@@ -58,7 +58,7 @@ int main(int argc, char* argv[])
     }
 #endif
 
-#ifdef TRACE_ON
+#if TRACE_ON
     while (main_time <= MAX_TIME)
     {
         const uint64_t posedge_time =
@@ -112,11 +112,11 @@ int main(int argc, char* argv[])
     }
 #endif
 
-#ifndef TRACE_ON
+#if !TRACE_ON
     nvboard_quit();
 #endif
 
-#ifdef TRACE_ON
+#if TRACE_ON
 #if MAIN_HAS_STIM
     stim::finish_report();
 #endif
@@ -129,7 +129,7 @@ int main(int argc, char* argv[])
     delete dut;
     dut = NULL;
 
-#ifdef TRACE_ON
+#if TRACE_ON
     return 0;
 #else
     return 0;

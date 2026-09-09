@@ -3,6 +3,19 @@
 
 #include "myuse.h"
 
+/**以下为可配置的默认参量*/
+
+#ifndef TRACE_ON
+#define TRACE_ON 1
+#endif
+
+/************************/
+
+#ifndef MAX_TIME
+#define MAX_TIME 1000
+#endif
+
+
 #define MAIN_TOP_HEADER_2(name) <name.h>
 #define MAIN_TOP_HEADER(name) MAIN_TOP_HEADER_2(name)
 #include MAIN_TOP_HEADER(TOP_CLASS)
@@ -29,9 +42,6 @@
 #else
 #define MAIN_HAS_STIM 0
 #endif
-
-#define TRACE_ON
-#define MAX_TIME 1000
 
 extern TOP_CLASS* dut;
 extern VerilatedVcdC* tfp;
