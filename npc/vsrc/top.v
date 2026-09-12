@@ -1,16 +1,12 @@
 module top(
 	input clk,
 	input rst,
-	input c,
-	input d,
-	output e);
+	input [7:0]data,
+    output valid,
+	output [2:0]out,
+    output [7:0]out2);
 
-	reg creg;
-
-	always @(*)begin
-		creg = c & d;
-	end
-
-	assign e =creg;
+encoder #(8,3) m1 (.input_data(data),.out(out),.valid(valid));
+decoder #(3,8) m2 (.enable(valid),.inputcode(out),.out(out2));
 
 endmodule

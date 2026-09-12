@@ -1,4 +1,4 @@
-#以下为可配置变量
+#********以下执行命令时可配置变量***************
 
 #配置是否启用脚本输入以及wave仿真
 TRACE_ON ?= 1
@@ -6,40 +6,67 @@ TRACE_ON ?= 1
 #配置最大仿真时间（仅在TRACE_ON启用时生效）
 MAX_TIME ?= 2000
 
+#配置检查文件的文件名（check命令使用）
+CHECK_FILE ?= * 
 
+#*****************这里面是文件运行的可选参数*************
 
-
-
-
-#以下为根命名
-
+#工程根目录
 MY_BASE_DIR = .
+
+#输出的编译程序名称
 MY_SIM_NAME = sim
+
+#顶层模型名
 MY_TOP = top
 
-#以下为辅助命名
-
+#中间代码文件目录
 MY_BUILD_DIR = $(MY_BASE_DIR)/build
 MY_OBJ_DIR = $(MY_BUILD_DIR)/obj_dir
 
-$(info mybuilddir = $(MY_BUILD_DIR))
-
+#源码目录
 MY_SRC_CPP = $(wildcard $(MY_BASE_DIR)/csrc/*.cpp)
 MY_SRC_V = $(wildcard $(MY_BASE_DIR)/vsrc/*.v)
 
-
-
-#以下为nvboard构建变量
-
+#nvboard自动绑定的c代码文件位置
 MY_NVBIND = $(MY_BUILD_DIR)/auto_bind.cpp
+
+#nvboard自动绑定引脚文件
 MY_NXDC = $(MY_BASE_DIR)/constr/top.nxdc
-MY_SRC_CPP += $(MY_NVBIND)
 
-$(info mynxdc = $(MY_NXDC))
+#verilator检查错误输出日志
+VER_ERR_LOG = $(MY_BASE_DIR)/last_check_error.log
 
-#以下为中间参数编译
+#verilator检查忽略规则
+VER_IGNORE_RULE = -Wno-DECLFILENAME \
+				  -Wno-MULTITOP \
+#忽略的规则注释：
+#1\忽略文件名和内部的模型名字不一致的警告
+#2\忽略一个文件里面存在多个顶层模型的警告
 
+
+#***********************************************
+
+#nvboard相关依赖，仅在开启追踪时启用
+ifeq ($(TRACE_ON),1)
+MY_NV_SRC_CPP =
+MY_NV_BUILD_DEPS =
+MY_NV_LIB =
+MY_NV_LDFLAGS =
+else
+MY_NV_SRC_CPP = $(MY_NVBIND)
+MY_NV_BUILD_DEPS = $(MY_NVBIND) $(MY_NXDC) $(NVBOARD_ARCHIVE)
+MY_NV_LIB = $(NVBOARD_ARCHIVE)
+MY_NV_LDFLAGS = $(LDFLAGS)
+endif
+
+MY_SRC_CPP += $(MY_NV_SRC_CPP)
+
+ifeq ($(TRACE_ON),1)
+INCFLAGS =
+else
 INCFLAGS = $(addprefix -I,$(NVBOARD_HOME)/usr/include)
+endif
 CXXFLAGS += $(INCFLAGS) -std=c++17 \
 	-DTOP_NAME="\"V$(MY_TOP)\"" \
 	-DTOP_CLASS=V$(MY_TOP) \
@@ -48,29 +75,34 @@ CXXFLAGS += $(INCFLAGS) -std=c++17 \
 	-DTRACE_ON=$(TRACE_ON)
 
 
-$(info MY_SRC_V = $(MY_SRC_V))
+
+
+#$(info mynxdc = $(MY_NXDC))
+#$(info mybuilddir = $(MY_BUILD_DIR))
+#$(info MY_SRC_V = $(MY_SRC_V))
 #$(info MY_SRC_CPP = $(MY_SRC_CPP))  #检测测试，
 
-.PHONY: build sim all run clear self_test
+.PHONY: build sim all run clear self_test check
 
 all: sim
 
-build: $(MY_SRC_V) $(MY_SRC_CPP) $(NVBOARD_ARCHIVE) $(MY_NXDC) $(MY_NVBIND)
+build: $(MY_SRC_V) $(MY_SRC_CPP) $(MY_NV_BUILD_DEPS)
 	$(call git_commit, "build RTL") # DO NOT REMOVE THIS LINE!!!
 	@mkdir -p $(MY_OBJ_DIR)
 	@rm -rf $(MY_OBJ_DIR)
 	verilator --cc --exe --build -j 0 --trace --vpi --public-flat-rw \
 		--top-module $(MY_TOP) \
 		--Mdir $(MY_OBJ_DIR) \
-		$(MY_SRC_V) $(MY_SRC_CPP) $(NVBOARD_ARCHIVE) \
+		$(MY_SRC_V) $(MY_SRC_CPP) $(MY_NV_LIB) \
 		-o $(MY_SIM_NAME) \
 		$(addprefix -CFLAGS , $(CXXFLAGS)) \
-		$(addprefix -LDFLAGS , $(LDFLAGS))
+		$(addprefix -LDFLAGS , $(MY_NV_LDFLAGS))
 
 sim: build run
 
 $(MY_NVBIND): $(MY_NXDC)
 	@rm -f $@
+	@mkdir -p $(dir $@)
 	python3 $(NVBOARD_HOME)/scripts/auto_pin_bind.py \
 		$< $@
 
@@ -86,6 +118,16 @@ self_test:
 	@make sim TRACE_ON=1
 	@make sim TRACE_ON=0
 
+check:
+	clear
+	verilator --lint-only -Wall $(VER_IGNORE_RULE) ./vsrc/$(CHECK_FILE) 2>&1 | tee $(VER_ERR_LOG)
+
+watch:
+	watchexec -w "$(abspath $(MY_BASE_DIR)/vsrc)" -e v -- make check
+
+
 
 include ../Makefile
+ifeq ($(TRACE_ON),0)
 include $(NVBOARD_HOME)/scripts/nvboard.mk
+endif

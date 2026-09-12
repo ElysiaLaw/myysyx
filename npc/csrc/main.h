@@ -29,7 +29,10 @@
 #include <sstream>
 #include <string>
 #include "verilated_vcd_c.h"
+
+#if !TRACE_ON
 #include <nvboard.h>
+#endif
 
 // 只在 STIM 文件存在时接入 STIM；删除 stim.h/stim.cpp 后仍可独立编译 main。
 #if defined(__has_include)
@@ -47,7 +50,9 @@ extern TOP_CLASS* dut;
 extern VerilatedVcdC* tfp;
 extern int main_time;
 extern int init_check;
+#if !TRACE_ON
 void nvboard_bind_all_pins(TOP_CLASS* top);
+#endif
 
 
 

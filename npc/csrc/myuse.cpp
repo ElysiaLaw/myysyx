@@ -255,16 +255,19 @@ void hide_rootio_from_wave()
 
 	bool top_scope_seen = false;
 	bool init_check_inserted = false;
+	int staged_scope_depth = 0;
 
 	for (const std::string& current_line : staged_lines)
 	{
 		if (current_line.find("$scope") != std::string::npos)
 		{
 			top_scope_seen = true;
+			staged_scope_depth++;
 		}
 
 		if (top_scope_seen &&
 			current_line.find("$upscope") != std::string::npos &&
+			staged_scope_depth == 1 &&
 			!init_check_inserted &&
 			!staged_init_check.empty())
 		{
@@ -278,6 +281,12 @@ void hide_rootio_from_wave()
 		{
 			reordered_output << staged_init_check << '\n';
 			init_check_inserted = true;
+		}
+
+		if (current_line.find("$upscope") != std::string::npos &&
+			staged_scope_depth > 0)
+		{
+			staged_scope_depth--;
 		}
 
 		reordered_output << current_line << '\n';
