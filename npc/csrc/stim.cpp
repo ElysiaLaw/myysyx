@@ -2,1387 +2,631 @@
 
 namespace stim
 {
-    std::string configured_top_name()
-    {
-        return STIM_TOP_NAME_TEXT(STIM_TOP_NAME);
-    }
-
+    // 文本预处理与数值校验，只服务于 STIM 语法。
     namespace
     {
-        Program current_program;
-        std::map<std::string, vpiHandle> signal_handles;
-        std::map<std::string, Value> previous_expectations;
-        bool runtime_ready = false;
-        bool expectation_mismatch = false;
-        std::ofstream report_file;
-
-        void report(const std::string& text)
+        std::string trim(const std::string& text)
         {
-            if (report_file.is_open())
+            const auto first = text.find_first_not_of(" \t\r\n\f\v");
+            if (first == std::string::npos)
             {
-                report_file << text << std::endl;
+                return {};
             }
+            return text.substr(first, text.find_last_not_of(" \t\r\n\f\v") - first + 1);
         }
 
-        void add_error(
-            std::vector<Error>& errors,
-            const std::string& file,
-            int line,
-            const std::string& message
-        )
+        std::string preprocess(const std::string& text)
         {
-            errors.push_back({file, line, message});
-        }
-
-        const Port* find_port(const std::string& name)
-        {
-            for (const Port& port : current_program.ports)
-            {
-                if (port.name == name)
-                {
-                    return &port;
-                }
-            }
-
-            return nullptr;
-        }
-
-        bool parse_value(
-            const std::string& text,
-            Value& value,
-            std::string& message
-        )
-        {
-            // 兼容当前已有的单比特写法 a=0 / b=1。
-            if (text == "0" || text == "1")
-            {
-                value.width = 1;
-                value.bits = text;
-                return true;
-            }
-
-            size_t base_position = text.find_first_of("bh");
-
-            if (base_position == std::string::npos ||
-                base_position == 0 ||
-                base_position + 1 == text.size())
-            {
-                message = "invalid value";
-                return false;
-            }
-
-            std::stringstream width_stream(
-                text.substr(0, base_position)
-            );
-
-            int width;
-
-            if (!(width_stream >> width) || width <= 0)
-            {
-                message = "invalid value width";
-                return false;
-            }
-
-            char base = text[base_position];
-            std::string digits =
-                text.substr(base_position + 1);
-
-            value.width = width;
-            value.bits.clear();
-
-            if (base == 'b')
-            {
-                if (static_cast<int>(digits.size()) != width)
-                {
-                    message = "binary value width mismatch";
-                    return false;
-                }
-
-                for (char digit : digits)
-                {
-                    if (digit != '0' &&
-                        digit != '1' &&
-                        digit != 'x' &&
-                        digit != 'X')
-                    {
-                        message = "invalid binary digit";
-                        return false;
-                    }
-
-                    value.bits +=
-                        digit == 'X' ? 'x' : digit;
-                }
-
-                return true;
-            }
-
-            if (base != 'h')
-            {
-                message = "value base must be b or h";
-                return false;
-            }
-
-            int max_digits = (width + 3) / 4;
-
-            if (static_cast<int>(digits.size()) > max_digits)
-            {
-                message = "hex value has too many digits";
-                return false;
-            }
-
-            for (char digit : digits)
-            {
-                int number = -1;
-
-                if (digit >= '0' && digit <= '9')
-                {
-                    number = digit - '0';
-                }
-                else if (digit >= 'a' && digit <= 'f')
-                {
-                    number = digit - 'a' + 10;
-                }
-                else if (digit >= 'A' && digit <= 'F')
-                {
-                    number = digit - 'A' + 10;
-                }
-                else if (digit == 'x' || digit == 'X')
-                {
-                    number = -2;
-                }
-                else
-                {
-                    message = "invalid hexadecimal digit";
-                    return false;
-                }
-
-                for (int bit = 3; bit >= 0; bit--)
-                {
-                    if (number == -2)
-                    {
-                        value.bits += 'x';
-                    }
-                    else
-                    {
-                        value.bits +=
-                            ((number >> bit) & 1) ? '1' : '0';
-                    }
-                }
-            }
-
-            int extra =
-                static_cast<int>(value.bits.size()) - width;
-
-            if (extra > 0)
-            {
-                for (int i = 0; i < extra; i++)
-                {
-                    if (value.bits[i] != '0' &&
-                        value.bits[i] != 'x')
-                    {
-                        message = "hex value exceeds declared width";
-                        return false;
-                    }
-                }
-
-                value.bits = value.bits.substr(extra);
-            }
-            else if (extra < 0)
-            {
-                value.bits.insert(
-                    value.bits.begin(),
-                    -extra,
-                    '0'
-                );
-            }
-
-            return true;
-        }
-
-        bool validate_assignment(
-            const Assignment& assignment,
-            bool expectation,
-            bool is_default,
-            std::vector<Error>& errors,
-            const std::string& file
-        )
-        {
-            const Port* port = find_port(assignment.port);
-
-            if (port == nullptr)
-            {
-                add_error(
-                    errors,
-                    file,
-                    assignment.line,
-                    "port does not exist: " + assignment.port
-                );
-
-                return false;
-            }
-
-            bool output_check = expectation;
-
-            if (is_default)
-            {
-                output_check =
-                    port->direction == PortDirection::Output;
-            }
-
-            if (output_check &&
-                port->direction != PortDirection::Output)
-            {
-                add_error(
-                    errors,
-                    file,
-                    assignment.line,
-                    "expect requires an output port: " + assignment.port
-                );
-
-                return false;
-            }
-
-            if (!output_check &&
-                port->direction != PortDirection::Input)
-            {
-                add_error(
-                    errors,
-                    file,
-                    assignment.line,
-                    "input assignment requires an input port: " + assignment.port
-                );
-
-                return false;
-            }
-
-            if (assignment.value.width != port->width)
-            {
-                add_error(
-                    errors,
-                    file,
-                    assignment.line,
-                    "value width does not match port width: " + assignment.port
-                );
-
-                return false;
-            }
-
-            if (!output_check)
-            {
-                for (char bit : assignment.value.bits)
-                {
-                    if (bit == 'x')
-                    {
-                        add_error(
-                            errors,
-                            file,
-                            assignment.line,
-                            "x is not allowed for input: " + assignment.port
-                        );
-
-                        return false;
-                    }
-                }
-            }
-
-            return true;
-        }
-
-        void put_value(
-            vpiHandle handle,
-            const Value& value
-        )
-        {
-            int word_count = (value.width + 31) / 32;
-
-            std::vector<s_vpi_vecval> words(
-                word_count,
-                {0, 0}
-            );
-
-            for (int i = 0; i < value.width; i++)
-            {
-                int position = value.width - i - 1;
-                int word = position / 32;
-                int bit = position % 32;
-
-                if (value.bits[i] == '1')
-                {
-                    words[word].aval |= 1u << bit;
-                }
-                else if (value.bits[i] == 'x')
-                {
-                    words[word].bval |= 1u << bit;
-                }
-            }
-
-            s_vpi_value vpi_value{};
-            vpi_value.format = vpiVectorVal;
-            vpi_value.value.vector = words.data();
-
-            vpi_put_value(
-                handle,
-                &vpi_value,
-                nullptr,
-                vpiNoDelay
-            );
-        }
-
-        bool match_value(
-            vpiHandle handle,
-            const Value& expected
-        )
-        {
-            if (expected.width <= 32)
-            {
-                s_vpi_value vpi_value{};
-                vpi_value.format = vpiIntVal;
-                vpi_get_value(handle, &vpi_value);
-
-                const uint32_t actual =
-                    static_cast<uint32_t>(vpi_value.value.integer);
-
-                for (int i = 0; i < expected.width; i++)
-                {
-                    if (expected.bits[i] == 'x')
-                    {
-                        continue;
-                    }
-
-                    const int position = expected.width - i - 1;
-                    const bool actual_bit =
-                        ((actual >> position) & 1u) != 0;
-                    const bool expected_bit =
-                        expected.bits[i] == '1';
-
-                    if (actual_bit != expected_bit)
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
-            }
-
-            int word_count = (expected.width + 31) / 32;
-
-            std::vector<s_vpi_vecval> words(
-                word_count,
-                {0, 0}
-            );
-
-            s_vpi_value vpi_value{};
-            vpi_value.format = vpiVectorVal;
-            vpi_value.value.vector = words.data();
-
-            vpi_get_value(handle, &vpi_value);
-
-            for (int i = 0; i < expected.width; i++)
-            {
-                if (expected.bits[i] == 'x')
-                {
-                    continue;
-                }
-
-                int position = expected.width - i - 1;
-                int word = position / 32;
-                int bit = position % 32;
-
-                bool unknown =
-                    (words[word].bval >> bit) & 1u;
-
-                bool actual =
-                    (words[word].aval >> bit) & 1u;
-
-                bool wanted = expected.bits[i] == '1';
-
-                if (unknown || actual != wanted)
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        void parse_port_field(
-            const std::string& raw,
-            const std::string& file,
-            int line,
-            std::vector<Port>& ports,
-            std::vector<Error>& errors,
-            bool& have_direction,
-            PortDirection& last_direction,
-            int& last_width
-        )
-        {
-            std::string field = preprocess(raw);
-
-            if (field.empty())
-            {
-                return;
-            }
-
-            std::stringstream stream(field);
-            std::string first_word;
-            stream >> first_word;
-
-            PortDirection direction;
-            bool explicit_direction = true;
-
-            if (first_word == "input")
-            {
-                direction = PortDirection::Input;
-            }
-            else if (first_word == "output")
-            {
-                direction = PortDirection::Output;
-            }
-            else if (first_word == "inout")
-            {
-                add_error(
-                    errors,
-                    file,
-                    line,
-                    "inout port is not supported"
-                );
-
-                return;
-            }
-            else
-            {
-                if (!have_direction)
-                {
-                    add_error(
-                        errors,
-                        file,
-                        line,
-                        "port direction is missing"
-                    );
-
-                    return;
-                }
-
-                direction = last_direction;
-                explicit_direction = false;
-            }
-
-            have_direction = true;
-
-            std::string rest;
-            std::getline(stream, rest);
-            rest = preprocess(rest);
-
-            if (!explicit_direction)
-            {
-                rest = first_word + " " + rest;
-            }
-
-            std::stringstream type_stream(rest);
-            std::string type_word;
-            type_stream >> type_word;
-
-            if (type_word == "reg" ||
-                type_word == "wire" ||
-                type_word == "logic")
-            {
-                std::getline(type_stream, rest);
-                rest = preprocess(rest);
-            }
-
-            int width = explicit_direction ? 1 : last_width;
-
-            if (!rest.empty() && rest[0] == '[')
-            {
-                size_t right = rest.find(']');
-                size_t colon = rest.find(':');
-
-                if (right == std::string::npos ||
-                    colon == std::string::npos)
-                {
-                    add_error(
-                        errors,
-                        file,
-                        line,
-                        "invalid port width"
-                    );
-
-                    return;
-                }
-
-                std::stringstream msb_stream(
-                    preprocess(rest.substr(1, colon - 1))
-                );
-
-                std::stringstream lsb_stream(
-                    preprocess(
-                        rest.substr(
-                            colon + 1,
-                            right - colon - 1
-                        )
-                    )
-                );
-
-                int msb;
-                int lsb;
-
-                if (!(msb_stream >> msb) ||
-                    !(lsb_stream >> lsb))
-                {
-                    add_error(
-                        errors,
-                        file,
-                        line,
-                        "invalid port width"
-                    );
-
-                    return;
-                }
-
-                width = msb >= lsb
-                    ? msb - lsb + 1
-                    : lsb - msb + 1;
-
-                rest = preprocess(rest.substr(right + 1));
-            }
-
-            if (!rest.empty() && rest.back() == ';')
-            {
-                rest.pop_back();
-                rest = preprocess(rest);
-            }
-
-            if (rest.empty())
-            {
-                add_error(
-                    errors,
-                    file,
-                    line,
-                    "port name is missing"
-                );
-
-                return;
-            }
-
-            for (const Port& old_port : ports)
-            {
-                if (old_port.name == rest)
-                {
-                    add_error(
-                        errors,
-                        file,
-                        line,
-                        "duplicate port: " + rest
-                    );
-
-                    return;
-                }
-            }
-
-            ports.push_back({
-                rest,
-                direction,
-                width,
-                line,
-                file
-            });
-
-            last_direction = direction;
-            last_width = width;
-        }
-    }
-
-    std::vector<std::string> readfile(const char* path)
-    {
-        std::vector<std::string> lines;
-        std::ifstream fin(path);
-
-        if (!fin.is_open())
-        {
-            report(
-                "error file=" + std::string(path) +
-                " line=0 message=failed to open"
-            );
-            return lines;
-        }
-
-        std::string line;
-
-        while (std::getline(fin, line))
-        {
-            lines.push_back(line);
-        }
-
-        return lines;
-    }
-
-    std::string preprocess(const std::string& text)
-    {
-        std::string result = text;
-        size_t comment_position = result.find("//");
-
+            size_t end = text.find("//");
 #if STIM_HASH_COMMENT
-        size_t hash_position = result.find('#');
-
-        if (comment_position == std::string::npos ||
-            (hash_position != std::string::npos &&
-             hash_position < comment_position))
-        {
-            comment_position = hash_position;
-        }
+            end = std::min(end, text.find('#'));
 #endif
-
-        if (comment_position != std::string::npos)
-        {
-            result = result.substr(0, comment_position);
+            return trim(text.substr(0, end));
         }
 
-        size_t begin = 0;
-        size_t end = result.size();
-
-        while (begin < end &&
-               std::isspace(
-                   static_cast<unsigned char>(result[begin])))
+        bool number(const std::string& text, Time& value)
         {
-            begin++;
-        }
-
-        while (end > begin &&
-               std::isspace(
-                   static_cast<unsigned char>(result[end - 1])))
-        {
-            end--;
-        }
-
-        return result.substr(begin, end - begin);
-    }
-
-    std::vector<Port> get_port(
-        std::vector<Error>& errors
-    )
-    {
-        namespace fs = std::filesystem;
-        std::vector<Port> ports;
-        bool found_top = false;
-
-        if (!fs::exists(STIM_V_PATH))
-        {
-            add_error(
-                errors,
-                STIM_V_PATH,
-                0,
-                "verilog directory does not exist"
-            );
-
-            return ports;
-        }
-
-        if (!fs::is_directory(STIM_V_PATH))
-        {
-            add_error(
-                errors,
-                STIM_V_PATH,
-                0,
-                "verilog path is not a directory"
-            );
-
-            return ports;
-        }
-
-        for (
-            const fs::directory_entry& entry :
-            fs::recursive_directory_iterator(STIM_V_PATH)
-        )
-        {
-            if (!entry.is_regular_file() ||
-                entry.path().extension() != ".v")
-            {
-                continue;
-            }
-
-            std::string file_path =
-                entry.path().string();
-
-            std::vector<std::string> lines =
-                readfile(file_path.c_str());
-
-            bool in_port_list = false;
-            bool finished = false;
-            bool have_direction = false;
-            PortDirection last_direction =
-                PortDirection::Input;
-            int last_width = 1;
-
-            std::string pending;
-            int pending_line = 0;
-
-            for (size_t i = 0; i < lines.size(); i++)
-            {
-                int line_number =
-                    static_cast<int>(i + 1);
-
-                std::string text =
-                    preprocess(lines[i]);
-
-                if (text.empty())
-                {
-                    continue;
-                }
-
-                std::string part = text;
-
-                if (!in_port_list)
-                {
-                    std::stringstream module_stream(text);
-                    std::string keyword;
-                    std::string module_name;
-
-                    module_stream >> keyword;
-                    module_stream >> module_name;
-
-                    size_t name_end =
-                        module_name.find_first_of("(#");
-
-                    if (name_end != std::string::npos)
-                    {
-                        module_name =
-                            module_name.substr(0, name_end);
-                    }
-
-                    if (keyword != "module" ||
-                        module_name != configured_top_name())
-                    {
-                        continue;
-                    }
-
-                    found_top = true;
-                    in_port_list = true;
-
-                    size_t left_parenthesis =
-                        text.find('(');
-
-                    if (left_parenthesis ==
-                        std::string::npos)
-                    {
-                        add_error(
-                            errors,
-                            file_path,
-                            line_number,
-                            "module port list not found"
-                        );
-
-                        break;
-                    }
-
-                    part =
-                        text.substr(left_parenthesis + 1);
-                }
-
-                size_t right_parenthesis =
-                    part.find(')');
-
-                if (right_parenthesis !=
-                    std::string::npos)
-                {
-                    part =
-                        part.substr(0, right_parenthesis);
-                    finished = true;
-                }
-
-                size_t begin = 0;
-
-                while (begin <= part.size())
-                {
-                    size_t comma =
-                        part.find(',', begin);
-
-                    std::string piece;
-
-                    if (comma == std::string::npos)
-                    {
-                        piece = part.substr(begin);
-                    }
-                    else
-                    {
-                        piece =
-                            part.substr(begin, comma - begin);
-                    }
-
-                    piece = preprocess(piece);
-
-                    if (!piece.empty())
-                    {
-                        if (pending.empty())
-                        {
-                            pending_line = line_number;
-                        }
-
-                        if (!pending.empty())
-                        {
-                            pending += " ";
-                        }
-
-                        pending += piece;
-                    }
-
-                    if (comma == std::string::npos)
-                    {
-                        break;
-                    }
-
-                    parse_port_field(
-                        pending,
-                        file_path,
-                        pending_line,
-                        ports,
-                        errors,
-                        have_direction,
-                        last_direction,
-                        last_width
-                    );
-
-                    pending.clear();
-                    pending_line = 0;
-                    begin = comma + 1;
-                }
-
-                if (finished)
-                {
-                    break;
-                }
-            }
-
-            if (!pending.empty())
-            {
-                parse_port_field(
-                    pending,
-                    file_path,
-                    pending_line,
-                    ports,
-                    errors,
-                    have_direction,
-                    last_direction,
-                    last_width
-                );
-            }
-
-            if (in_port_list && !finished)
-            {
-                add_error(
-                    errors,
-                    file_path,
-                    1,
-                    "missing ')' in module port list"
-                );
-            }
-
-            if (found_top)
-            {
-                break;
-            }
-        }
-
-        if (!found_top)
-        {
-            add_error(
-                errors,
-                STIM_V_PATH,
-                0,
-                "top module not found"
-            );
-        }
-
-        return ports;
-    }
-
-    bool load_program(
-        Program& new_program,
-        std::vector<Error>& errors
-    )
-    {
-        report_file.open(STIM_REPORT_PATH, std::ios::out | std::ios::trunc);
-        report("STIM report: " STIM_FILE_PATH);
-
-        current_program = Program{};
-        previous_expectations.clear();
-        expectation_mismatch = false;
-        current_program.ports = get_port(errors);
-
-        std::vector<std::string> lines =
-            readfile(STIM_FILE_PATH);
-
-        bool found_top_line = false;
-        std::string statement;
-        int statement_line = 0;
-
-        for (size_t i = 0; i < lines.size(); i++)
-        {
-            int line_number =
-                static_cast<int>(i + 1);
-
-            std::string text =
-                preprocess(lines[i]);
-
             if (text.empty())
             {
-                continue;
+                return false;
             }
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+            return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() &&
+                   value < std::numeric_limits<Time>::max();
+        }
 
-            if (!found_top_line)
+        bool identifier(const std::string& name)
+        {
+            if (name.empty() ||
+                !(std::isalpha(static_cast<unsigned char>(name[0])) || name[0] == '_'))
             {
-                if (text.rfind("top=", 0) != 0)
+                return false;
+            }
+            for (unsigned char c : name)
+            {
+                if (!std::isalnum(c) && c != '_' && c != '$')
                 {
-                    add_error(
-                        errors,
-                        STIM_FILE_PATH,
-                        line_number,
-                        "first line must be top=..."
-                    );
-                }
-                else if (preprocess(text.substr(4)) !=
-                         configured_top_name())
-                {
-                    add_error(
-                        errors,
-                        STIM_FILE_PATH,
-                        line_number,
-                        "top name does not match Makefile MY_TOP"
-                    );
-                }
-
-                found_top_line = true;
-                continue;
-            }
-
-            if (statement.empty())
-            {
-                statement_line = line_number;
-            }
-
-            if (!statement.empty())
-            {
-                statement += " ";
-            }
-
-            statement += text;
-
-            if (statement.find('}') == std::string::npos)
-            {
-                continue;
-            }
-
-            size_t left = statement.find('{');
-            size_t right = statement.find('}', left);
-
-            if (left == std::string::npos ||
-                right == std::string::npos)
-            {
-                add_error(
-                    errors,
-                    STIM_FILE_PATH,
-                    statement_line,
-                    "invalid assignment block"
-                );
-
-                statement.clear();
-                continue;
-            }
-
-            std::string prefix =
-                preprocess(statement.substr(0, left));
-
-            bool expectation =
-                prefix.rfind("expect", 0) == 0;
-
-            bool is_default =
-                prefix.find("@default") != std::string::npos;
-
-            uint64_t time = 0;
-
-            if (!is_default)
-            {
-                size_t at = prefix.find('@');
-
-                if (at == std::string::npos)
-                {
-                    add_error(
-                        errors,
-                        STIM_FILE_PATH,
-                        statement_line,
-                        "time marker is missing"
-                    );
-
-                    statement.clear();
-                    continue;
-                }
-
-                std::stringstream time_stream(
-                    prefix.substr(at + 1)
-                );
-
-                if (!(time_stream >> time))
-                {
-                    add_error(
-                        errors,
-                        STIM_FILE_PATH,
-                        statement_line,
-                        "invalid time marker"
-                    );
-
-                    statement.clear();
-                    continue;
+                    return false;
                 }
             }
+            return true;
+        }
 
-            std::string body =
-                statement.substr(
-                    left + 1,
-                    right - left - 1
-                );
-
-            size_t begin = 0;
-
-            while (begin <= body.size())
+        bool value_bits(const std::string& text, std::string& bits, std::string& error)
+        {
+            if (text == "0" || text == "1")
             {
-                size_t semicolon =
-                    body.find(';', begin);
-
-                std::string assignment_text;
-
-                if (semicolon == std::string::npos)
+                bits = text;
+                return true;
+            }
+            const size_t base = text.find_first_of("bh");
+            Time width = 0;
+            if (base == std::string::npos || !number(text.substr(0, base), width) || width == 0 ||
+                width > STIM_MAX_WIDTH)
+            {
+                error = "invalid width/value; use e.g. 1b0, 8b00000001 or 8h01";
+                return false;
+            }
+            const std::string digits = text.substr(base + 1);
+            if (digits.empty() || (text[base] == 'b' && digits.size() != width) ||
+                (text[base] == 'h' && digits.size() > (width + 3) / 4))
+            {
+                error = "digit count does not match declared width";
+                return false;
+            }
+            bits.clear();
+            for (char c : digits)
+            {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (text[base] == 'b')
                 {
-                    assignment_text = body.substr(begin);
+                    if (c != '0' && c != '1' && c != 'x')
+                    {
+                        error = "binary digits must be 0, 1 or x";
+                        return false;
+                    }
+                    bits += c;
                 }
                 else
                 {
-                    assignment_text =
-                        body.substr(
-                            begin,
-                            semicolon - begin
-                        );
-                }
-
-                assignment_text =
-                    preprocess(assignment_text);
-
-                if (!assignment_text.empty())
-                {
-                    size_t equal =
-                        assignment_text.find('=');
-
-                    if (equal == std::string::npos)
+                    if (c == 'x')
                     {
-                        add_error(
-                            errors,
-                            STIM_FILE_PATH,
-                            statement_line,
-                            "assignment is missing '='"
-                        );
+                        bits += "xxxx";
+                        continue;
                     }
-                    else
+                    int digit = c >= '0' && c <= '9'   ? c - '0'
+                                : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                                       : -1;
+                    if (digit < 0)
                     {
-                        Assignment assignment;
-                        assignment.port =
-                            preprocess(
-                                assignment_text.substr(0, equal)
-                            );
-                        assignment.line = statement_line;
-
-                        std::string value_text =
-                            preprocess(
-                                assignment_text.substr(equal + 1)
-                            );
-
-                        std::string message;
-
-                        if (!parse_value(
-                                value_text,
-                                assignment.value,
-                                message))
-                        {
-                            add_error(
-                                errors,
-                                STIM_FILE_PATH,
-                                statement_line,
-                                message
-                            );
-                        }
-                        else if (validate_assignment(
-                                     assignment,
-                                     expectation,
-                                     is_default,
-                                     errors,
-                                     STIM_FILE_PATH
-                                 ))
-                        {
-                            if (is_default)
-                            {
-                                current_program.defaults.push_back(
-                                    assignment
-                                );
-                            }
-                            else if (expectation)
-                            {
-                                current_program.expects[time].push_back(
-                                    assignment
-                                );
-                            }
-                            else
-                            {
-                                current_program.inputs[time].push_back(
-                                    assignment
-                                );
-                            }
-                        }
+                        error = "invalid hexadecimal digit";
+                        return false;
+                    }
+                    for (int bit = 3; bit >= 0; --bit)
+                    {
+                        bits += ((digit >> bit) & 1) ? '1' : '0';
                     }
                 }
-
-                if (semicolon == std::string::npos)
-                {
-                    break;
-                }
-
-                begin = semicolon + 1;
             }
-
-            statement.clear();
-        }
-
-        if (!statement.empty())
-        {
-            add_error(
-                errors,
-                STIM_FILE_PATH,
-                statement_line,
-                "assignment block is missing '}'"
-            );
-        }
-
-        if (errors.empty())
-        {
-            for (const Assignment& assignment :
-                 current_program.defaults)
+            if (bits.size() > width)
             {
-                const Port* port =
-                    find_port(assignment.port);
-
-                if (port != nullptr &&
-                    port->direction == PortDirection::Output)
+                const size_t extra = bits.size() - width;
+                if (bits.substr(0, extra).find('1') != std::string::npos)
                 {
-                    previous_expectations[assignment.port] =
-                        assignment.value;
+                    error = "value exceeds declared width";
+                    return false;
                 }
+                bits.erase(0, extra);
             }
+            if (bits.size() < width)
+            {
+                bits.insert(0, width - bits.size(), '0');
+            }
+            return true;
         }
+    } // namespace
 
-        new_program = current_program;
-        return errors.empty();
+    // 加载生命周期：先清理旧状态，诊断完成后才允许驱动。
+    Program::~Program()
+    {
+        clear();
     }
 
-    bool init_runtime(
-        std::vector<Error>& errors
-    )
+    void Program::clear()
     {
-        signal_handles.clear();
-
-        for (const Port& port : current_program.ports)
+        ready_ = false;
+        for (const auto& item : ports_)
         {
-            // main 使用空实例名后，顶层端口位于 TOP 作用域。
-            std::string name =
-                std::string("TOP.") + port.name;
-
-            std::vector<char> mutable_name(
-                name.begin(),
-                name.end()
-            );
-
-            mutable_name.push_back('\0');
-
-            vpiHandle handle =
-                vpi_handle_by_name(
-                    reinterpret_cast<PLI_BYTE8*>(
-                        mutable_name.data()
-                    ),
-                    nullptr
-                );
-
-            if (handle == nullptr)
-            {
-                add_error(
-                    errors,
-                    port.file,
-                    port.line,
-                    "cannot find signal: " + name
-                );
-            }
-            else
-            {
-                signal_handles[port.name] = handle;
-            }
+            vpi_release_handle(item.second.handle);
         }
-
-        runtime_ready = errors.empty();
-        return runtime_ready;
+        ports_.clear();
+        defaults_.clear();
+        events_.clear();
+        expected_.clear();
+        diagnostics_.clear();
+        config_ = {};
+        if (report_.is_open())
+        {
+            report_.close();
+        }
+        report_.clear();
     }
 
-    void apply_inputs(uint64_t time)
+    void Program::diagnose(int line, const std::string& level, const std::string& message)
     {
-        if (!runtime_ready)
-        {
-            return;
-        }
-
-        for (const Port& port : current_program.ports)
-        {
-            if (port.direction != PortDirection::Input)
-            {
-                continue;
-            }
-
-            const Assignment* selected = nullptr;
-
-            auto event = current_program.inputs.find(time);
-
-            if (event != current_program.inputs.end())
-            {
-                for (const Assignment& assignment : event->second)
-                {
-                    if (assignment.port == port.name)
-                    {
-                        selected = &assignment;
-                    }
-                }
-            }
-
-            if (selected == nullptr)
-            {
-                for (const Assignment& assignment :
-                     current_program.defaults)
-                {
-                    if (assignment.port == port.name)
-                    {
-                        selected = &assignment;
-                    }
-                }
-            }
-
-            Value zero{
-                port.width,
-                std::string(port.width, '0')
-            };
-
-            if (selected == nullptr && time != 0)
-            {
-                continue;
-            }
-
-            put_value(
-                signal_handles[port.name],
-                selected == nullptr ? zero : selected->value
-            );
-        }
+        diagnostics_.push_back({line, level, message});
     }
 
-    bool check_outputs(uint64_t time)
+    bool Program::print_diagnostics()
     {
-        if (!runtime_ready)
-        {
-            return false;
-        }
-
-        auto event = current_program.expects.find(time);
-
-        if (event != current_program.expects.end())
-        {
-            for (const Assignment& assignment : event->second)
-            {
-                previous_expectations[assignment.port] =
-                    assignment.value;
-            }
-        }
-
         bool success = true;
-        bool checked = false;
-
-        for (const Port& port : current_program.ports)
+        std::stable_sort(diagnostics_.begin(), diagnostics_.end(),
+                         [](const Diagnostic& a, const Diagnostic& b) { return a.line < b.line; });
+        if (!diagnostics_.empty())
         {
-            if (port.direction != PortDirection::Output)
+            std::cerr << '\n';
+        }
+        for (const auto& d : diagnostics_)
+        {
+            std::cerr << "STIM " << d.level << " " << path_;
+            if (d.line > 0)
             {
-                continue;
+                std::cerr << ':' << d.line;
             }
-
-            auto expected =
-                previous_expectations.find(port.name);
-
-            if (expected == previous_expectations.end())
+            std::cerr << ": " << d.message << '\n';
+            if (d.level == "ERROR")
             {
-                continue;
-            }
-
-            checked = true;
-
-            if (!match_value(
-                    signal_handles[port.name],
-                    expected->second
-                ))
-            {
-                report(
-                    "time=" + std::to_string(time) +
-                    " port=" + port.name +
-                    " expected=" + expected->second.bits +
-                    " result=FAIL"
-                );
-
-                expectation_mismatch = true;
                 success = false;
             }
-            else
-            {
-#if STIM_REPORT_PASS
-                report(
-                    "time=" + std::to_string(time) +
-                    " port=" + port.name +
-                    " expected=" + expected->second.bits +
-                    " result=PASS"
-                );
-#endif
-            }
         }
-
-#if STIM_REPORT_PASS
-        if (!checked)
-        {
-            report(
-                "time=" + std::to_string(time) +
-                " result=SKIP"
-            );
-        }
-#endif
-
         return success;
     }
 
-    void finish_report()
+    bool Program::load(const std::string& path, const std::string& top, const std::string& scope,
+                       const std::string& clock, const std::string& reset, bool config_only)
     {
-        if (expectation_mismatch)
+        clear();
+        path_ = path;
+        clock_ = clock;
+        reset_ = reset;
+        std::ifstream input(path);
+        if (!input)
         {
-            std::cout << std::endl
-                      << "存在不匹配的预期输入"
-                      << std::endl;
+            diagnose(0, config_only ? "WARNING" : "ERROR",
+                     "cannot open script; runtime defaults retained");
+            print_diagnostics();
+            return false;
+        }
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(input, line))
+        {
+            lines.push_back(preprocess(line));
+        }
+        if (input.bad())
+        {
+            diagnose(0, config_only ? "WARNING" : "ERROR", "failed while reading script");
+        }
+        parse(lines, top, config_only);
+        if (!config_only)
+        {
+            bind(scope);
+        }
+        const bool success = print_diagnostics();
+        ready_ = success && !config_only;
+        return success;
+    }
+
+    // 先按语句收集配置与事件，再统一检查真实端口。
+    void Program::parse(const std::vector<std::string>& lines, const std::string& top,
+                        bool config_only)
+    {
+        bool header = false, skip_block = false;
+        std::string pending;
+        int first_line = 0;
+        for (size_t i = 0; i < lines.size(); ++i)
+        {
+            const std::string& text = lines[i];
+            const int line = static_cast<int>(i + 1);
+            if (text.empty())
+            {
+                if (!pending.empty())
+                {
+                    pending += '\n';
+                }
+                continue;
+            }
+            if (!header)
+            {
+                header = true;
+                const auto equal = text.find('=');
+                if (equal == std::string::npos || trim(text.substr(0, equal)) != "top" ||
+                    trim(text.substr(equal + 1)) != top)
+                {
+                    diagnose(line, config_only ? "WARNING" : "ERROR",
+                             "expected first statement top=" + top + ", got: " + text);
+                    if (config_only)
+                    {
+                        return;
+                    }
+                }
+                continue;
+            }
+            const bool event_start = text[0] == '@' || text.rfind("expect", 0) == 0;
+            if (config_only)
+            {
+                if (skip_block)
+                {
+                    if (text.find('}') != std::string::npos)
+                    {
+                        skip_block = false;
+                    }
+                    continue;
+                }
+                if (event_start || text.find('{') != std::string::npos)
+                {
+                    skip_block = text.find('}') == std::string::npos;
+                    continue;
+                }
+            }
+            if (!pending.empty() && event_start)
+            {
+                diagnose(first_line, "ERROR", "missing '}' before the next statement");
+                pending.clear();
+            }
+            if (pending.empty())
+            {
+                const auto equal = text.find('=');
+                if (!event_start && text.find('{') == std::string::npos)
+                {
+                    const std::string key = trim(text.substr(0, equal));
+                    if ((key == "max_time" || key == "reset_time") && equal != std::string::npos)
+                    {
+                        auto& setting = key == "max_time" ? config_.max_time : config_.reset_time;
+                        Time parsed = 0;
+                        const std::string raw = trim(text.substr(equal + 1));
+                        if (!number(raw, parsed))
+                        {
+                            diagnose(line, "WARNING",
+                                     "invalid " + key + "='" + raw +
+                                         "'; expected unsigned decimal; " +
+                                         (setting ? "retaining previous valid value " +
+                                                        std::to_string(*setting)
+                                                  : "using main/Makefile default"));
+                        }
+                        else
+                        {
+                            if (setting)
+                            {
+                                diagnose(line, "WARNING",
+                                         "repeated " + key + "; last valid value wins: " + raw);
+                            }
+                            setting = parsed;
+                        }
+                    }
+                    else
+                    {
+                        diagnose(line, config_only ? "WARNING" : "ERROR",
+                                 "unknown/malformed statement: " + text +
+                                     "; use max_time=..., reset_time=... or @time {...}");
+                    }
+                    continue;
+                }
+                first_line = line;
+            }
+            if (config_only)
+            {
+                continue;
+            }
+            if (!pending.empty())
+            {
+                pending += '\n';
+            }
+            pending += text;
+            if (text.find('}') != std::string::npos)
+            {
+                parse_block(pending, first_line);
+                pending.clear();
+            }
+        }
+        if (!header)
+        {
+            diagnose(0, config_only ? "WARNING" : "ERROR", "empty script; expected top=" + top);
+        }
+        if (!pending.empty())
+        {
+            diagnose(first_line, "ERROR", "assignment block is missing '}'");
         }
     }
 
-    void print_errors(
-        const std::vector<Error>& errors
-    )
+    void Program::parse_block(const std::string& text, int line)
     {
-        for (const Error& error : errors)
+        const auto left = text.find('{'), right = text.find('}');
+        if (left == std::string::npos || right < left)
         {
-            report(
-                "error file=" + error.file +
-                " line=" + std::to_string(error.line) +
-                " message=" + error.message
-            );
+            diagnose(line, "ERROR", "invalid assignment block");
+            return;
+        }
+        if (!trim(text.substr(right + 1)).empty())
+        {
+            diagnose(line, "ERROR", "unexpected text after '}'; one block per line");
+        }
+        if (text.find('{', left + 1) < right)
+        {
+            diagnose(line, "ERROR", "nested assignment blocks are not supported");
+            return;
+        }
+        std::string prefix = trim(text.substr(0, left));
+        bool expect = false;
+        if (prefix.rfind("expect", 0) == 0 && prefix.size() > 6 &&
+            std::isspace(static_cast<unsigned char>(prefix[6])))
+        {
+            expect = true;
+            prefix = trim(prefix.substr(6));
+        }
+        const bool is_default = prefix == "@default" && !expect;
+        Time time = 0;
+        if (!is_default && (prefix.empty() || prefix[0] != '@' || !number(prefix.substr(1), time)))
+        {
+            diagnose(line, "ERROR",
+                     "expected @default, @<unsigned time> or expect @<unsigned time>");
+            return;
+        }
+        const std::string body = text.substr(left + 1, right - left - 1);
+        size_t begin = 0;
+        while (begin < body.size())
+        {
+            const auto end = body.find(';', begin);
+            const std::string raw =
+                body.substr(begin, end == std::string::npos ? end : end - begin);
+            const auto first = raw.find_first_not_of(" \t\r\n");
+            if (first != std::string::npos)
+            {
+                const size_t offset = left + 1 + begin + first;
+                const int source_line =
+                    line + static_cast<int>(std::count(text.begin(), text.begin() + offset, '\n'));
+                const std::string item = trim(raw);
+                const auto equal = item.find('=');
+                Assignment a;
+                a.port = trim(item.substr(0, equal));
+                a.line = source_line;
+                a.expect = expect;
+                std::string error;
+                if (equal == std::string::npos || !identifier(a.port))
+                {
+                    diagnose(source_line, "ERROR", "expected port=value, got: " + item);
+                }
+                else if (!value_bits(trim(item.substr(equal + 1)), a.bits, error))
+                {
+                    diagnose(source_line, "ERROR", a.port + ": " + error);
+                }
+                else if (is_default)
+                {
+                    defaults_.push_back(a);
+                }
+                else
+                {
+                    events_[time].push_back(a);
+                }
+            }
+            if (end == std::string::npos)
+            {
+                break;
+            }
+            begin = end + 1;
         }
     }
-}
+
+    // 端口信息来自已经构建的模型，不扫描或猜测 Verilog 声明。
+    void Program::bind(const std::string& scope)
+    {
+        vpiHandle root = vpi_handle_by_name(const_cast<char*>(scope.c_str()), nullptr);
+        if (!root)
+        {
+            diagnose(0, "ERROR", "VPI scope not found: " + scope);
+            return;
+        }
+        vpiHandle iterator = vpi_iterate(vpiReg, root);
+        vpi_release_handle(root);
+        if (!iterator)
+        {
+            diagnose(0, "ERROR", "no VPI variables exposed in " + scope);
+            return;
+        }
+        while (vpiHandle handle = vpi_scan(iterator))
+        {
+            const int direction = vpi_get(vpiDirection, handle);
+            const int width = vpi_get(vpiSize, handle);
+            const std::string name = vpi_get_str(vpiName, handle);
+            if (direction != vpiInput && direction != vpiOutput && direction != vpiInout)
+            {
+                vpi_release_handle(handle);
+                continue;
+            }
+            if (direction == vpiInout || vpi_get(vpiType, handle) == vpiRegArray || width <= 0 ||
+                width > STIM_MAX_WIDTH)
+            {
+                diagnose(0, "ERROR", "unsupported port (inout/unpacked array/width): " + name);
+                vpi_release_handle(handle);
+                continue;
+            }
+            ports_.emplace(name, Port{handle, direction, width});
+        }
+        if (ports_.empty())
+        {
+            diagnose(0, "ERROR", "no input/output ports found in " + scope);
+        }
+        for (auto& value : defaults_)
+        {
+            validate(value, true);
+        }
+        for (auto& event : events_)
+        {
+            for (auto& value : event.second)
+            {
+                validate(value, false);
+            }
+        }
+    }
+
+    void Program::validate(Assignment& value, bool is_default)
+    {
+        const auto found = ports_.find(value.port);
+        if (found == ports_.end())
+        {
+            diagnose(value.line, "ERROR", "port does not exist: " + value.port);
+            return;
+        }
+        const Port& port = found->second;
+        if (is_default)
+        {
+            value.expect = port.direction == vpiOutput;
+        }
+        if (value.port == clock_ || (is_default && value.port == reset_))
+        {
+            diagnose(value.line, "ERROR",
+                     "main owns clock/startup reset; use explicit post-reset rst events only: " +
+                         value.port);
+        }
+        if ((value.expect && port.direction != vpiOutput) ||
+            (!value.expect && port.direction != vpiInput))
+        {
+            diagnose(value.line, "ERROR", "wrong port direction for assignment: " + value.port);
+        }
+        if (value.bits.size() != static_cast<size_t>(port.width))
+        {
+            diagnose(value.line, "ERROR",
+                     value.port + ": port width=" + std::to_string(port.width) +
+                         ", value width=" + std::to_string(value.bits.size()));
+        }
+        if (!value.expect && value.bits.find('x') != std::string::npos)
+        {
+            diagnose(value.line, "ERROR",
+                     "x is only allowed in output expectations: " + value.port);
+        }
+    }
+
+    void Program::write(const Assignment& value)
+    {
+        s_vpi_value data{};
+        data.format = vpiBinStrVal;
+        data.value.str = const_cast<char*>(value.bits.c_str());
+        vpi_put_value(ports_.at(value.port).handle, &data, nullptr, vpiNoDelay);
+    }
+
+    // start 只初始化一次；apply 只更新当前刻度存在的事件。
+    void Program::start(Time release_time)
+    {
+        if (!ready_)
+        {
+            return;
+        }
+        size_t ignored = 0;
+        auto next = events_.begin();
+        while (next != events_.end() && next->first <= release_time)
+        {
+            ignored += next->second.size();
+            next = events_.erase(next);
+        }
+        if (ignored)
+        {
+            std::cerr << "STIM WARNING " << path_ << ": ignored " << ignored
+                      << " assignments at/before reset release t=" << release_time << '\n';
+        }
+        for (const auto& item : ports_)
+        {
+            if (item.second.direction == vpiInput && item.first != clock_ && item.first != reset_)
+            {
+                write({item.first, std::string(item.second.width, '0'), 0, false});
+            }
+        }
+        for (const auto& value : defaults_)
+        {
+            if (value.expect)
+            {
+                expected_[value.port] = value;
+            }
+            else
+            {
+                write(value);
+            }
+        }
+#if STIM_REPORT_PASS
+        report_.open(STIM_REPORT_PATH, std::ios::trunc);
+        if (!report_)
+        {
+            std::cerr << "STIM WARNING " << STIM_REPORT_PATH << ": cannot save PASS/SKIP report\n";
+        }
+#endif
+    }
+
+    void Program::apply(Time time)
+    {
+        if (!ready_)
+        {
+            return;
+        }
+        const auto found = events_.find(time);
+        if (found == events_.end())
+        {
+            return;
+        }
+        for (const auto& value : found->second)
+        {
+            if (value.expect)
+            {
+                expected_[value.port] = value;
+            }
+            else
+            {
+                write(value);
+            }
+        }
+    }
+
+    // x 是期望掩码；这里只返回匹配结果，不控制主仿真退出。
+    bool Program::check(Time time)
+    {
+        if (!ready_)
+        {
+            return true;
+        }
+        bool success = true;
+        for (const auto& item : expected_)
+        {
+            const auto& expected = item.second;
+            s_vpi_value data{};
+            data.format = vpiBinStrVal;
+            vpi_get_value(ports_.at(item.first).handle, &data);
+            const std::string actual = data.value.str ? data.value.str : "";
+            bool match = actual.size() == expected.bits.size();
+            for (size_t i = 0; match && i < actual.size(); ++i)
+            {
+                if (expected.bits[i] != 'x' && expected.bits[i] != actual[i])
+                {
+                    match = false;
+                }
+            }
+            if (!match)
+            {
+                success = false;
+                std::cerr << "STIM ERROR " << path_ << ':' << expected.line << ": time=" << time
+                          << " port=" << item.first << " expected=" << expected.bits
+                          << " actual=" << actual << " result=FAIL\n";
+            }
+#if STIM_REPORT_PASS
+            else if (report_)
+            {
+                report_ << "time=" << time << " port=" << item.first << " result=PASS\n";
+            }
+#endif
+        }
+#if STIM_REPORT_PASS
+        if (expected_.empty() && report_)
+        {
+            report_ << "time=" << time << " result=SKIP\n";
+        }
+#endif
+        return success;
+    }
+} // namespace stim

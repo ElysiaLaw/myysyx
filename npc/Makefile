@@ -6,6 +6,12 @@ TRACE_ON ?= 1
 #配置最大仿真时间（仅在TRACE_ON启用时生效）
 MAX_TIME ?= 2000
 
+#可选脚本路径，留空使用 stim.h 的 STIM_FILE_PATH
+STIM_FILE ?=
+
+#配置复位时间（TRACE_ON和NVBoard均生效）
+RESET_TIME ?= 20
+
 #配置检查文件的文件名（check命令使用）
 CHECK_FILE ?= * 
 
@@ -26,7 +32,7 @@ MY_OBJ_DIR = $(MY_BUILD_DIR)/obj_dir
 
 #源码目录
 MY_SRC_CPP = $(wildcard $(MY_BASE_DIR)/csrc/*.cpp)
-MY_SRC_V = $(wildcard $(MY_BASE_DIR)/vsrc/*.v)
+MY_SRC_V = $(shell find $(MY_BASE_DIR)/vsrc -type f -name "*.v" | sort)
 
 #nvboard自动绑定的c代码文件位置
 MY_NVBIND = $(MY_BUILD_DIR)/auto_bind.cpp
@@ -47,7 +53,7 @@ VER_IGNORE_RULE = -Wno-DECLFILENAME \
 
 #***********************************************
 
-#nvboard相关依赖，仅在开启追踪时启用
+#NVBoard 依赖仅在 TRACE_ON=0 时启用
 ifeq ($(TRACE_ON),1)
 MY_NV_SRC_CPP =
 MY_NV_BUILD_DEPS =
@@ -67,11 +73,15 @@ INCFLAGS =
 else
 INCFLAGS = $(addprefix -I,$(NVBOARD_HOME)/usr/include)
 endif
+ifneq ($(origin STIM_REPORT_PASS),undefined)
+CXXFLAGS += -DSTIM_REPORT_PASS=$(STIM_REPORT_PASS)
+endif
+
 CXXFLAGS += $(INCFLAGS) -std=c++17 \
-	-DTOP_NAME="\"V$(MY_TOP)\"" \
 	-DTOP_CLASS=V$(MY_TOP) \
-	-DSTIM_TOP_NAME=$(MY_TOP) \
+	-DMY_TOP=$(MY_TOP) \
 	-DMAX_TIME=$(MAX_TIME) \
+	-DRESET_TIME=$(RESET_TIME) \
 	-DTRACE_ON=$(TRACE_ON)
 
 
@@ -107,7 +117,7 @@ $(MY_NVBIND): $(MY_NXDC)
 		$< $@
 
 run:
-	$(MY_OBJ_DIR)/$(MY_SIM_NAME)
+	$(MY_OBJ_DIR)/$(MY_SIM_NAME) $(STIM_FILE)
 
 clear:
 	@rm -rf $(MY_BUILD_DIR)

@@ -1,60 +1,36 @@
-#ifndef _MAIN_H_
-#define _MAIN_H_
+#ifndef MAIN_H
+#define MAIN_H
 
-#include "myuse.h"
-
-/**以下为可配置的默认参量*/
-
+// 主仿真配置：编译命令传入的定义优先，缺失时使用这里的默认值。
 #ifndef TRACE_ON
 #define TRACE_ON 1
 #endif
-
-/************************/
-
 #ifndef MAX_TIME
 #define MAX_TIME 1000
 #endif
-
-
-#define MAIN_TOP_HEADER_2(name) <name.h>
-#define MAIN_TOP_HEADER(name) MAIN_TOP_HEADER_2(name)
-#include MAIN_TOP_HEADER(TOP_CLASS)
-#undef MAIN_TOP_HEADER
-#undef MAIN_TOP_HEADER_2
-#include "verilated.h"
-#include <stdio.h>
-#include <cstdint>
-#include <fstream>
-#include <set>
-#include <sstream>
-#include <string>
-#include "verilated_vcd_c.h"
-
-#if !TRACE_ON
-#include <nvboard.h>
+#ifndef RESET_TIME
+#define RESET_TIME 20
 #endif
 
-// 只在 STIM 文件存在时接入 STIM；删除 stim.h/stim.cpp 后仍可独立编译 main。
-#if defined(__has_include)
+// 主入口依赖；实现文件只包含 main.h。
+#include <memory>
+#include "sim_utils.h"
+#if !TRACE_ON
+#include <nvboard.h>
+void nvboard_bind_all_pins(TOP_CLASS* top);
+#endif
+
+// STIM 是可选组件；移除它不影响主仿真和波形工具。
 #if __has_include("stim.h")
 #define MAIN_HAS_STIM 1
 #include "stim.h"
 #else
 #define MAIN_HAS_STIM 0
 #endif
-#else
-#define MAIN_HAS_STIM 0
-#endif
 
-extern TOP_CLASS* dut;
-extern VerilatedVcdC* tfp;
-extern int main_time;
-extern int init_check;
-#if !TRACE_ON
-void nvboard_bind_all_pins(TOP_CLASS* top);
-#endif
-
-
-
-
+// 留出末尾计数空间，避免时间自增溢出。
+static_assert(MAX_TIME >= 0 && static_cast<uint64_t>(MAX_TIME) < UINT64_MAX,
+              "MAX_TIME must be in [0, UINT64_MAX-1]");
+static_assert(RESET_TIME >= 0 && static_cast<uint64_t>(RESET_TIME) < UINT64_MAX,
+              "RESET_TIME must be in [0, UINT64_MAX-1]");
 #endif

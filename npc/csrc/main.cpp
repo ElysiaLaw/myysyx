@@ -1,136 +1,129 @@
 #include "main.h"
 
-TOP_CLASS* dut = NULL;
-VerilatedVcdC* tfp = NULL;       // 波形文件对象
-int main_time = 0;               // 仿真时间计数
+TOP_CLASS* dut = nullptr;
+VerilatedVcdC* tfp = nullptr;
+uint64_t main_time = 0;
 int init_check = 0;
 
 int main(int argc, char* argv[])
 {
     Verilated::commandArgs(argc, argv);
-    // 使用空实例名，让 Verilator VPI 将顶层端口暴露为 TOP.<port>。
-    dut = new TOP_CLASS("");
+    uint64_t max_time = MAX_TIME;
+    uint64_t reset_time = RESET_TIME;
+    // 模型先于 Program 创建，保证 VPI 句柄先于模型释放。
+    auto model = std::make_unique<TOP_CLASS>("");
+    dut = model.get();
 
-#if TRACE_ON
-    Verilated::traceEverOn(true);
-    tfp = new VerilatedVcdC;
-    dut->trace(tfp, 99);
-    trace_init();
-    tfp->open("wave.vcd");
-#endif
-
-#if TRACE_ON && MAIN_HAS_STIM
+#if MAIN_HAS_STIM
     stim::Program program;
-    std::vector<stim::Error> errors;
-
-    if (!stim::load_program(program, errors))
-    {
-        stim::print_errors(errors);
+    const char* script = argc > 1 ? argv[1] : STIM_FILE_PATH;
+    const bool loaded =
+        program.load(script, MAIN_TEXT(MY_TOP), MAIN_VPI_SCOPE, MAIN_TEXT(MAIN_CLOCK_SIGNAL),
+                     MAIN_TEXT(MAIN_RESET_SIGNAL), !TRACE_ON);
 #if TRACE_ON
-        tfp->close();
-        delete tfp;
-        tfp = NULL;
-#endif
-        delete dut;
-        dut = NULL;
+    if (!loaded)
+    {
         return 1;
+    }
+    if (program.config().max_time)
+    {
+        max_time = *program.config().max_time;
+    }
+#endif
+    if (loaded && program.config().reset_time)
+    {
+        reset_time = *program.config().reset_time;
     }
 #endif
 
-#if !TRACE_ON
+#if TRACE_ON
+    Verilated::traceEverOn(true);
+    auto wave = std::make_unique<VerilatedVcdC>();
+    tfp = wave.get();
+    dut->trace(tfp, 99);
+    trace_init();
+    tfp->open(MAIN_WAVE_PATH);
+    if (!tfp->isOpen())
+    {
+        std::cerr << "SIM ERROR: cannot open " << MAIN_WAVE_PATH << '\n';
+        return 1;
+    }
+    if (max_time < reset_time)
+    {
+        std::cerr << "SIM WARNING: MAX_TIME precedes reset release; simulation ends during reset\n";
+    }
+#else
     nvboard_bind_all_pins(dut);
     nvboard_init();
 #endif
 
-    dut->clk = 0;
-    reset(20);
-
+    // 初始时刻只求值；后续每个刻度按同一规则翻转时钟。
+    dut->MAIN_CLOCK_SIGNAL = 0;
+    reset(reset_time != 0);
+    for (;;)
+    {
+#if !TRACE_ON
+        nvboard_update();
+#endif
 #if TRACE_ON && MAIN_HAS_STIM
-    if (!stim::init_runtime(errors))
-    {
-        stim::print_errors(errors);
-        tfp->close();
-        delete tfp;
-        tfp = NULL;
-        delete dut;
-        dut = NULL;
-        return 1;
-    }
-#endif
-
-#if TRACE_ON
-    while (main_time <= MAX_TIME)
-    {
-        const uint64_t posedge_time =
-            static_cast<uint64_t>(main_time);
-
-#if MAIN_HAS_STIM
-        stim::apply_inputs(posedge_time);
-#endif
-        myclock_time::half_single_posedge();
-#if MAIN_HAS_STIM
-        if (!stim::check_outputs(posedge_time))
+        if (main_time > reset_time)
         {
-            init_check = 1;
+            program.apply(main_time);
+        }
+#endif
+        if (main_time != 0)
+        {
+            clock_step();
         }
         else
         {
-            init_check = 0;
+            dut->eval();
+        }
+
+        // 先完成本刻度的正常边沿，再释放复位，不增加额外时间。
+        if (main_time == reset_time)
+        {
+            reset(false);
+#if TRACE_ON && MAIN_HAS_STIM
+            program.start(reset_time);
+#endif
+            dut->eval();
+        }
+        // 模型求值后检查，确保波形中的标记属于当前时刻。
+        init_check = 0;
+#if TRACE_ON && MAIN_HAS_STIM
+        if (main_time > reset_time)
+        {
+            init_check = program.check(main_time) ? 0 : 1;
         }
 #endif
         trace_step();
-
-        if (main_time > MAX_TIME)
+#if TRACE_ON
+        if (main_time == max_time || Verilated::gotFinish())
         {
             break;
         }
-
-        const uint64_t negedge_time =
-            static_cast<uint64_t>(main_time);
-
-#if MAIN_HAS_STIM
-        stim::apply_inputs(negedge_time);
-#endif
-        myclock_time::half_single_negedge();
-#if MAIN_HAS_STIM
-        if (!stim::check_outputs(negedge_time))
-        {
-            init_check = 1;
-        }
-        else
-        {
-            init_check = 0;
-        }
-#endif
-        trace_step();
-    }
 #else
-    while (1)
-    {
-        nvboard_update();
-        myclock_time::single_cycle();
-    }
+        if (Verilated::gotFinish())
+        {
+            break;
+        }
 #endif
+        advance_time();
+    }
 
-#if !TRACE_ON
+    dut->final();
+#if TRACE_ON
+    tfp->close();
+    wave.reset();
+    tfp = nullptr;
+    const bool wave_ok = hide_rootio_from_wave();
+#else
     nvboard_quit();
 #endif
-
+    dut = nullptr;
 #if TRACE_ON
-#if MAIN_HAS_STIM
-    stim::finish_report();
-#endif
-    tfp->close();
-    delete tfp;
-    tfp = NULL;
-    hide_rootio_from_wave();
-#endif
-
-    delete dut;
-    dut = NULL;
-
-#if TRACE_ON
-    return 0;
+    return wave_ok ? 0 : 1;
 #else
     return 0;
 #endif
