@@ -30,7 +30,7 @@ MY_TOP = top
 MY_BUILD_DIR = $(MY_BASE_DIR)/build
 MY_OBJ_DIR = $(MY_BUILD_DIR)/obj_dir
 
-#源码目录
+#源码文件
 MY_SRC_CPP = $(wildcard $(MY_BASE_DIR)/csrc/*.cpp)
 MY_SRC_V = $(shell find $(MY_BASE_DIR)/vsrc -type f -name "*.v" | sort)
 
@@ -49,7 +49,6 @@ VER_IGNORE_RULE = -Wno-DECLFILENAME \
 #忽略的规则注释：
 #1\忽略文件名和内部的模型名字不一致的警告
 #2\忽略一个文件里面存在多个顶层模型的警告
-
 
 #***********************************************
 
@@ -85,8 +84,6 @@ CXXFLAGS += $(INCFLAGS) -std=c++17 \
 	-DTRACE_ON=$(TRACE_ON)
 
 
-
-
 #$(info mynxdc = $(MY_NXDC))
 #$(info mybuilddir = $(MY_BUILD_DIR))
 #$(info MY_SRC_V = $(MY_SRC_V))
@@ -101,6 +98,7 @@ build: $(MY_SRC_V) $(MY_SRC_CPP) $(MY_NV_BUILD_DEPS)
 	@mkdir -p $(MY_OBJ_DIR)
 	@rm -rf $(MY_OBJ_DIR)
 	verilator --cc --exe --build -j 0 --trace --vpi --public-flat-rw \
+		-Wno-fatal \
 		--top-module $(MY_TOP) \
 		--Mdir $(MY_OBJ_DIR) \
 		$(MY_SRC_V) $(MY_SRC_CPP) $(MY_NV_LIB) \
@@ -117,7 +115,13 @@ $(MY_NVBIND): $(MY_NXDC)
 		$< $@
 
 run:
-	$(MY_OBJ_DIR)/$(MY_SIM_NAME) $(STIM_FILE)
+	@echo "**********************************"
+	@git add -A
+	git status
+	@$(MY_OBJ_DIR)/$(MY_SIM_NAME) $(STIM_FILE)
+ifeq ($(TRACE_ON),1)
+	@gtkwave ./wave.vcd
+endif
 
 clear:
 	@rm -rf $(MY_BUILD_DIR)
@@ -130,7 +134,7 @@ self_test:
 
 check:
 	clear
-	verilator --lint-only -Wall $(VER_IGNORE_RULE) ./vsrc/$(CHECK_FILE) 2>&1 | tee $(VER_ERR_LOG)
+	verilator --lint-only -Wall --top-module $(MY_TOP) $(VER_IGNORE_RULE) ./vsrc/$(CHECK_FILE) 2>&1 | tee $(VER_ERR_LOG)
 
 watch:
 	watchexec -w "$(abspath $(MY_BASE_DIR)/vsrc)" -e v -- make check

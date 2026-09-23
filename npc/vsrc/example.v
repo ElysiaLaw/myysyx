@@ -25,6 +25,8 @@ module example(
   Reg #(3, 3'b0) i1 (clk, rst, in[3:1], out[3:1], out[0]);
 endmodule
 
+
+
 // 选择器模板内部实现
 module MuxKeyInternal #(NR_KEY = 2, KEY_LEN = 1, DATA_LEN = 1, HAS_DEFAULT = 0) (
   output reg [DATA_LEN-1:0] out,

@@ -1,12 +1,11 @@
 module top(
 	input clk,
 	input rst,
-	input [7:0]data,
-    output valid,
-	output [2:0]out,
-    output [7:0]out2);
+	input [15:0]dataA,
+    input [15:0]dataB,
+    input [2:0]operate,
+    output [15:0]outdata);
 
-encoder #(8,3) m1 (.input_data(data),.out(out),.valid(valid));
-decoder #(3,8) m2 (.enable(valid),.inputcode(out),.out(out2));
+    ALU #(16) m1 (dataA,dataB,operate,outdata); 
 
 endmodule
