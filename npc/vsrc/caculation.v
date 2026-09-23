@@ -20,12 +20,16 @@ module ALU #(WIDTH = 8)(
 
     assign subchoice = &(operate ^~ 3'b001);
 
+    /* verilator lint_off PINCONNECTEMPTY */
+
     add #(WIDTH) ALU_add(
          .a(dataA),
          .b( { WIDTH{subchoice}} ^ dataB ),
          .cin(subchoice),
          .out(result_add_sub),
          .cout());
+
+    /* verilator lint_on PINCONNECTEMPTY */
 
     assign result_not = ~dataA;
     assign result_and = dataA & dataB;

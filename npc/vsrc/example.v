@@ -1,10 +1,10 @@
 // 触发器模板
-module Reg #(WIDTH = 1, RESET_VAL = 0) (
+module Reg #(WIDTH = 1, RESET_VAL = 0) (    //RESET_VAL 复位数值
   input clk,
   input rst,
-  input [WIDTH-1:0] din,
-  output reg [WIDTH-1:0] dout,
-  input wen
+  input [WIDTH-1:0] din,                    //外部输入的数据
+  output reg [WIDTH-1:0] dout,              //触发器内部的寄存的数据
+  input wen                                 //写使能位
 );
   always @(posedge clk) begin
     if (rst) dout <= RESET_VAL;

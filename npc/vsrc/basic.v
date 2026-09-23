@@ -85,6 +85,8 @@ module addInit (
     assign cout = f|g;
  endmodule
 
+/* verilator lint_off UNUSEDSIGNAL */
+
 //( A<B => 1 else is 0)
 module compare_unsigned #(WIDTH = 8)(
     input [WIDTH-1:0] dataA,
@@ -108,6 +110,10 @@ module compare_unsigned #(WIDTH = 8)(
     assign out = | outdata[WIDTH-1:0];
 
 endmodule
+
+/* verilator lint_on UNUSEDSIGNAL */
+
+
 // A<B=>1 else is 0
 module compare_signed #(WIDTH = 8) (
     input [WIDTH-1:0] dataA,
@@ -118,5 +124,41 @@ module compare_signed #(WIDTH = 8) (
     assign outdata[1] = dataA[WIDTH-1] &(~dataB[WIDTH-1]);
     compare_unsigned #(WIDTH-1) compare_signed_init(.dataA(dataA[WIDTH-2:0]), .dataB(dataB[WIDTH-2:0]), .out( outdata[0]));
     assign out =outdata[1] | ((dataA[WIDTH-1] ~^ dataB[WIDTH-1] ) & outdata[0]);
+
+endmodule
+
+//operate width is 3 bit ; which
+//0-reset; 1-set; 2-logical_right ; 3-logical_left; 4-arithmetic_right; 
+//5-(logical_right then input 1 bit from left and output all of the bit)
+//6-right_roration ; 7-left_roration
+module shift_register #(DATA_LEN = 8,DEFAULT_NUM=1'b0)( //这个DEFAULT的定义应当为一bit位宽，用于默认填充
+    input clk,
+    input rst,
+    input [2:0] operate,
+    input serial_input,
+    input [DATA_LEN-1:0] parallel_input,
+    output [DATA_LEN-1:0] outdata);
+
+    wire [DATA_LEN-1:0]reg_input;
+
+    Reg #(DATA_LEN,0) shiftreg_reg (
+        .clk(clk),
+        .rst( ( ~( |operate ) ) | rst ),
+        .din(reg_input),
+        .dout(outdata),
+        .wen(1'b1));
+
+    MuxKey #(7,3,DATA_LEN) shift_mux (
+        .out(reg_input),
+        .key(operate),
+        .lut({
+        3'b001,parallel_input,
+        3'b010,{DEFAULT_NUM,outdata[DATA_LEN-1:1]},
+        3'b011,{outdata[DATA_LEN-2:0],DEFAULT_NUM},
+        3'b100,{outdata[DATA_LEN-1],outdata[DATA_LEN-1:1]},
+        3'b101,{serial_input,outdata[DATA_LEN-1:1]},
+        3'b110,{outdata[0],outdata[DATA_LEN-1:1]},
+        3'b111,{outdata[DATA_LEN-2:0],outdata[DATA_LEN-1]}
+        }));
 
 endmodule

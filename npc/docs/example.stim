@@ -1,0 +1,103 @@
+# 可直接运行：make sim STIM_FILE=constr/example.stim
+# 使用当前 top（8 位高位优先编码 + 3/8 译码），故意在 t=25 产生一次 FAIL。
+# ERROR/WARNING 在 shell；FAIL 不终止仿真，最终退出码仍为 0。
+# 第一条有效语句的模块名必须与 Makefile MY_TOP 一致。
+top=top
+max_time=32
+reset_time=4
+
+# 以下两行演示可恢复警告：非法值被忽略，保留上面的合法 32、4。
+max_time=not_a_number
+reset_time=-1
+
+# 默认值只在启动复位释放后初始化一次。
+# 输入没有新事件时保持上次值；输出期望一直保持至同端口的下一条 expect。
+# 普通未给初值的输入初始化为 0；clk/rst 由主时序拥有，不允许写在 default 中。
+@default { data=8h00; out=3b000; valid=1b0; out2=8h00; }
+
+# 复位释放时刻及以前的显式输入/期望均忽略，产生一条汇总 WARNING。
+@1 { data=8hff; }
+expect @4 { out=3b111; }
+
+// // 与 # 都可注释；# 是否启用由 STIM_HASH_COMMENT 控制。
+# t=5：全零，三个输出都检查。
+@5 { data=8b00000000; }
+expect @5 { out=3b000; valid=1b0; out2=8h00; }
+
+# 每一个输入位单独为 1。
+@6 { data=8b00000001; }
+expect @6 { out=3b000; valid=1b1; out2=8h01; }
+@7 { data=8b00000010; }
+expect @7 { out=3b001; out2=8h02; }
+@8 { data=8b00000100; }
+expect @8 { out=3b010; out2=8h04; }
+@9 { data=8b00001000; }
+expect @9 { out=3b011; out2=8h08; }
+@10 { data=8b00010000; }
+expect @10 { out=3b100; out2=8h10; }
+@11 { data=8b00100000; }
+expect @11 { out=3b101; out2=8h20; }
+@12 { data=8b01000000; }
+expect @12 { out=3b110; out2=8h40; }
+@13 { data=8b10000000; }
+expect @13 { out=3b111; out2=8h80; }
+
+# 多个 1：选择最高有效位；译码仅点亮这一位。
+@14 { data=8h03; }
+expect @14 { out=3b001; out2=8h02; }
+@15 { data=8h05; }
+expect @15 { out=3b010; out2=8h04; }
+@16 { data=8h0a; }
+expect @16 { out=3b011; out2=8h08; }
+@17 { data=8h18; }
+expect @17 { out=3b100; out2=8h10; }
+@18 { data=8h24; }
+expect @18 { out=3b101; out2=8h20; }
+@19 { data=8h60; }
+expect @19 { out=3b110; out2=8h40; }
+@20 { data=8hff; }
+expect @20 { out=3b111; out2=8h80; }
+
+# 多行块，每行错误都能定位；t=22 不再设置输入，继续保持 8ha5。
+@21 {
+    data=8ha5;
+}
+expect @21 {
+    out=3b111;
+    valid=1b1;
+    out2=8h80;
+}
+expect @22 { out=3b111; }
+
+# x/X 表示“该输出位不比较”，不表示向 DUT 写未知值。
+# 部分忽略：仅要求最高位为 1；十六进制 x 每个代表四个忽略位。
+expect @23 { out=3b1xx; out2=8h8x; }
+# 全忽略（不制造 FAIL）；没有任何期望的端口也不检查。
+expect @24 { out=3bXXX; valid=1bx; out2=8hxx; }
+
+# 故意失败：输入保持 a5，真实 out=111，而此处要求 000。
+# __init_check__ 在 t=25 为 1；t=26 恢复正确期望后为 0。
+expect @25 { out=3b000; valid=1b1; out2=8h80; }
+expect @26 { out=3b111; }
+
+@27 { data=8h00; }
+expect @27 { out=3b000; valid=1b0; out2=8h00; }
+# 后续显式 rst 事件允许；当前组合电路未使用 rst，输出保持不变。
+# 在有状态 RTL 中，复位效果取决于 RTL 本身，时钟不会被 STIM 改变。
+@28 { rst=1b1; }
+@29 { rst=1b0; }
+# t=30..32 没有新事件，继续保持和检查；仿真在 32 结束。
+
+# 以下是非法写法示例，默认注释掉。逐条取消注释可观察解析 ERROR。
+# @12abc { data=8h01; }           // 时间含字母
+# @-1 { data=8h01; }              // 时间为负
+# @30 { data=8b0000000x; }        // 输入不允许 x
+# @30 { missing_port=1b0; }       // 不存在的端口
+# @30 { data=1b0; }              // 位宽错误（data 为 8 位）
+# expect @30 { data=8h00; }       // 不能对输入端口写 expect
+# @30 { out=3b000; }             // 不能驱动输出
+# @30 { clk=1b1; }               // 时钟归主时序
+# @default { rst=1b1; }          // 启动复位归 main
+# @30 { data=8h00; } garbage     // 块后不能有垃圾字符或第二个块
+# expectSomething @30 { out=3b000; } // 关键字必须是 expect
+# 有解析 ERROR 时，所有独立错误汇总后退出，不会运行上面的故意 FAIL。
